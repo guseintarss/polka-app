@@ -250,7 +250,8 @@ function pantryFields(input, base, options) {
     category: category,
     storage: storage,
     expires: E.isValidISODate(source.expires) ? source.expires : null,
-    price: Math.round(price)
+    price: Math.round(price),
+    barcode: E.cleanScanCode(source.barcode, 64)
   };
 }
 

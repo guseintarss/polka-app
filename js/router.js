@@ -5,6 +5,7 @@
  */
 
 const routes = [];
+const listeners = [];
 let root = null;
 let fallback = 'pantry';
 let started = false;
@@ -39,6 +40,27 @@ export function register(pattern, definition) {
     tab: definition.tab || segments[0]
   });
   routes.sort(function (a, b) { return b.staticCount - a.staticCount || b.segments.length - a.segments.length; });
+}
+
+export function onChange(listener) {
+  if (typeof listener !== 'function') return function () {};
+  listeners.push(listener);
+  return function () {
+    const index = listeners.indexOf(listener);
+    if (index !== -1) listeners.splice(index, 1);
+  };
+}
+
+function notifyChange() {
+  if (!listeners.length || !current) return;
+  const payload = {
+    path: current.path,
+    tab: current.tab,
+    params: Object.assign({}, current.params)
+  };
+  listeners.slice().forEach(function (listener) {
+    try { listener(payload); } catch (error) { console.error('POLKA: слушатель маршрута упал', error); }
+  });
 }
 
 function match(segments) {
@@ -97,8 +119,10 @@ function render(options) {
   updateNav(found.route.tab);
   setTitle(found.route.title);
 
+  let painted = false;
   try {
     found.route.render(root, current);
+    painted = true;
   } catch (error) {
     console.error('POLKA: не удалось отрисовать маршрут', current.path, error);
     root.innerHTML = '<div class="screen"><div class="empty">' +
@@ -108,6 +132,7 @@ function render(options) {
       '</div></div>';
   }
   updateNav(found.route.tab);
+  if (painted) notifyChange();
 
   if (!options || options.scroll !== false) {
     window.scrollTo({ top: 0, behavior: 'auto' });

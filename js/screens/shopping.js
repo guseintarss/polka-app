@@ -6,6 +6,7 @@
 
 import * as store from '../store.js';
 import { navigate } from '../router.js';
+import { track } from '../analytics.js';
 import {
   DATA, E, esc, icon, money, qty, plural, capitalize,
   render as renderHTML, emptyState, toast, openSheet, confirmSheet,
@@ -342,6 +343,7 @@ function toggleChecked(screen, input) {
 
   updateRow(li, item);
   updateSummary(screen);
+  if (item.checked) track('shopping_check');
 
   if (hideChecked && item.checked) {
     li.hidden = true;
@@ -738,6 +740,7 @@ function openAddSheet() {
     if (saveButton) saveButton.disabled = true;
     try {
       const result = store.addShopping({ name: name, qty: amount, unit: unitSelect.value });
+      track('shopping_add');
       sheet.close();
       renderScreen({ focusItem: result.item.id });
       toast(result.merged ? 'Добавили к «' + result.item.name + '».' : '«' + result.item.name + '» в списке.');

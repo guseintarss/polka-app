@@ -4,7 +4,7 @@
  * localStorage живёт отдельно от кэша.
  */
 
-const VERSION = 'polka-app-v7';
+const VERSION = 'polka-app-v8';
 const CACHE = VERSION;
 const OFFLINE_URL = './index.html';
 
@@ -27,6 +27,9 @@ const ASSETS = [
   './js/router.js',
   './js/ui.js',
   './js/pwa.js',
+  './js/version.js',
+  './js/analytics.js',
+  './js/scanner.js',
   './js/screens/pantry.js',
   './js/screens/recipes.js',
   './js/screens/plan.js',
@@ -34,6 +37,7 @@ const ASSETS = [
   './js/screens/more.js',
   './assets/fonts.css',
   './assets/favicon.svg',
+  './assets/vendor/zxing.min.js',
   './assets/icons/icon-192.png',
   './assets/icons/icon-512.png',
   './assets/icons/icon-maskable-512.png',

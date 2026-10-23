@@ -6,6 +6,7 @@
 
 import * as store from '../store.js';
 import * as router from '../router.js';
+import { track } from '../analytics.js';
 import {
   DATA, E, esc, icon, money, qty, plural, capitalize,
   render, toast, openSheet, confirmSheet, emptyState
@@ -566,6 +567,7 @@ function generateNow() {
     });
     return;
   }
+  track('plan_generate');
   toast('План на семь дней собран: ' + result.meals + ' ' + plural(result.meals, ['приём', 'приёма', 'приёмов']) + ' пищи.');
 }
 

@@ -6,6 +6,7 @@
 
 import * as store from '../store.js';
 import * as router from '../router.js';
+import { track } from '../analytics.js';
 import {
   DATA, E, esc, icon, money, qty, plural, capitalize, render, $, $$, on,
   emptyState, matchLabel, matchTone, toast, openSheet
@@ -552,6 +553,7 @@ function openCookSheet(recipe) {
           return;
         }
 
+        if (result) track('cook');
         entry.close();
         router.refresh({ scroll: false });
         if (!result) return;
@@ -764,10 +766,13 @@ export function recipeScreen(root, ctx) {
   }
 
   router.setTitle(recipe.title);
+  // router.refresh() перерисовывает тот же рецепт после готовки — это не новое открытие.
+  const reopened = cardRecipeId === recipe.id && Boolean(root.querySelector('.recipe-screen'));
   if (cardServings === null || cardRecipeId !== recipe.id) {
     cardServings = clampServings(store.getState().settings.servings);
     cardRecipeId = recipe.id;
   }
   render(root, recipeMarkup(recipe));
   bindRecipe(root, recipe);
+  if (!reopened) track('recipe_open');
 }

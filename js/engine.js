@@ -226,6 +226,66 @@
     return JSON.parse(JSON.stringify(value));
   }
 
+  function cleanScanText(value, max) {
+    return String(value == null ? '' : value)
+      .replace(/[\u0000-\u001f\u007f]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, max || 80);
+  }
+
+  function cleanScanCode(value, max) {
+    if (typeof value !== 'string' && typeof value !== 'number') return '';
+    return String(value)
+      .replace(/[\u0000-\u001f\u007f\s]/g, '')
+      .slice(0, max || 64);
+  }
+
+  function parseScanPayload(raw) {
+    const result = { code: null, name: null, kind: 'unknown' };
+    const text = cleanScanText(raw, 512);
+    if (!text) return result;
+
+    const digits = text.replace(/[\s-]/g, '');
+    if (/^\d{8}$/.test(digits) || /^\d{12}$/.test(digits) ||
+        /^\d{13}$/.test(digits) || /^\d{14}$/.test(digits)) {
+      result.code = digits;
+      result.kind = 'barcode';
+      return result;
+    }
+
+    const gs1 = text.match(/^(?:\(01\)|01)(\d{14})/);
+    if (gs1) {
+      result.code = gs1[1];
+      result.kind = 'gs1';
+      return result;
+    }
+
+    if (/^https?:\/\//i.test(text)) {
+      let name = '';
+      try {
+        const url = new URL(text);
+        const keys = ['name', 'title', 'product', 'n', 'text'];
+        for (let i = 0; i < keys.length; i += 1) {
+          const value = cleanScanText(url.searchParams.get(keys[i]), 80);
+          if (value.length >= 2) { name = value; break; }
+        }
+        if (!name) {
+          const segment = decodeURIComponent((url.pathname.split('/').filter(Boolean).pop() || ''));
+          const pretty = cleanScanText(segment.replace(/[-_+]+/g, ' '), 80);
+          if (pretty.length >= 2 && !/^[0-9a-f]{8,}$/i.test(pretty)) name = pretty;
+        }
+      } catch (error) { /* ссылку не разобрать — оставляем как есть */ }
+      if (name) result.name = name;
+      result.kind = 'qr';
+      return result;
+    }
+
+    result.name = cleanScanText(text, 80);
+    result.kind = result.name ? 'text' : 'unknown';
+    return result;
+  }
+
   function emptyState(today) {
     return {
       version: 1,
@@ -272,6 +332,7 @@
         storage: storageOf(ingredient ? ingredient.id : null, source.storage),
         expires: isValidISODate(source.expires) ? source.expires : null,
         price: Math.max(0, Number(source.price) || 0),
+        barcode: cleanScanCode(source.barcode, 64),
         addedAt: isValidISODate(source.addedAt) ? source.addedAt : now
       };
     }).filter((entry) => entry.name);
@@ -1096,6 +1157,8 @@
     expiryState: expiryState,
     uid: uid,
     clone: clone,
+    parseScanPayload: parseScanPayload,
+    cleanScanCode: cleanScanCode,
     emptyState: emptyState,
     normalizeState: normalizeState,
     pantryEntries: pantryEntries,

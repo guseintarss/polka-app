@@ -1,18 +1,21 @@
 /*
  * ПОЛКА · экран «Ещё».
- * Статистика кухни, настройки плана, перенос данных и установка PWA.
+ * Статистика кухни, настройки плана, перенос данных, аналитика и установка PWA.
  */
 
 import * as store from '../store.js';
 import * as router from '../router.js';
 import * as pwa from '../pwa.js';
+import { APP_VERSION } from '../version.js';
 import {
   E, esc, icon, money, plural, render, toast,
-  confirmSheet, closeAllSheets
+  confirmSheet, closeAllSheets, shareText
 } from '../ui.js';
+import {
+  track, getSummary, buildTextReport, buildJsonReport, resetAnalytics
+} from '../analytics.js';
 import { openPlanSettings, planSettingsSummary } from './plan.js';
 
-const APP_VERSION = '1.0.0';
 const INSTALL_HINT = 'Откройте меню браузера и выберите «Установить приложение» или «Добавить на главный экран».';
 
 let busy = false;
@@ -48,6 +51,7 @@ export function moreScreen(root, ctx) {
       statsMarkup(summary) +
       settingsMarkup(state) +
       dataMarkup() +
+      analyticsMarkup() +
       '<section class="section" aria-labelledby="more-install-title">' +
         '<div class="section-head">' +
           '<h2 class="section-title" id="more-install-title">Установка</h2>' +
@@ -197,6 +201,85 @@ function dataMarkup() {
   '</section>';
 }
 
+/* ── Аналитика использования ─────────────────────────────────────── */
+
+function eventCount(summary, name) {
+  const value = summary.events ? Number(summary.events[name]) : 0;
+  return Number.isFinite(value) && value > 0 ? value : 0;
+}
+
+function factRow(label, value, tone) {
+  return '<div class="more-facts__row">' +
+    '<dt>' + esc(label) + '</dt>' +
+    '<dd' + (tone ? ' class="' + tone + '"' : '') + '>' + esc(String(value)) + '</dd>' +
+  '</div>';
+}
+
+function analyticsDateText(value) {
+  if (!value) return 'пока не было';
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) return 'пока не было';
+  return new Intl.DateTimeFormat('ru-RU', {
+    day: '2-digit', month: '2-digit', year: 'numeric'
+  }).format(date);
+}
+
+function analyticsMarkup() {
+  const summary = getSummary();
+  const added = eventCount(summary, 'product_add') + eventCount(summary, 'product_edit');
+  const scanned = eventCount(summary, 'scan_ok');
+  const opened = eventCount(summary, 'recipe_open');
+  const cooked = eventCount(summary, 'cook');
+  const checked = eventCount(summary, 'shopping_check');
+
+  return '<section class="section" aria-labelledby="more-analytics-title">' +
+    '<div class="section-head">' +
+      '<h2 class="section-title" id="more-analytics-title">Аналитика использования</h2>' +
+      '<span class="section-note">на устройстве</span>' +
+    '</div>' +
+    '<div class="more-about card">' +
+      '<p class="more-about__text">Считаются только действия: открытия экранов, добавления, сканирования. Без названий продуктов и цен. Автоматически ничего не отправляется.</p>' +
+      '<dl class="more-facts">' +
+        factRow('Первый запуск', analyticsDateText(summary.firstSeen)) +
+        factRow('Дней с приложением', summary.daysActive) +
+        factRow('Запусков', summary.sessions) +
+        factRow('Добавлено продуктов', added) +
+        factRow('Сканирований', scanned) +
+        factRow('Открыто рецептов', opened) +
+        factRow('Приготовлено', cooked) +
+        factRow('Отмечено покупок', checked) +
+      '</dl>' +
+    '</div>' +
+    '<div class="more-actions">' +
+      '<button class="more-action" type="button" data-action="report-share">' +
+        '<span class="more-action__icon">' + icon('share') + '</span>' +
+        '<span class="more-action__body">' +
+          '<span class="more-action__title">Отправить отчёт</span>' +
+          '<span class="more-action__meta">Откроется меню «Поделиться»: Telegram, почта, заметки</span>' +
+        '</span>' +
+        '<span class="more-action__tail" aria-hidden="true">' + icon('chevron-right') + '</span>' +
+      '</button>' +
+      '<button class="more-action" type="button" data-action="report-download">' +
+        '<span class="more-action__icon">' + icon('download') + '</span>' +
+        '<span class="more-action__body">' +
+          '<span class="more-action__title">Скачать JSON</span>' +
+          '<span class="more-action__meta">Файл polka-analytics-' + store.getToday() + '.json с полными счётчиками</span>' +
+        '</span>' +
+        '<span class="more-action__tail" aria-hidden="true">' + icon('chevron-right') + '</span>' +
+      '</button>' +
+      '<button class="more-action more-action--danger" type="button" data-action="analytics-reset">' +
+        '<span class="more-action__icon">' + icon('trash') + '</span>' +
+        '<span class="more-action__body">' +
+          '<span class="more-action__title">Сбросить счётчики</span>' +
+          '<span class="more-action__meta">Удалить историю использования с устройства</span>' +
+        '</span>' +
+        '<span class="more-action__tail" aria-hidden="true">' + icon('chevron-right') + '</span>' +
+      '</button>' +
+    '</div>' +
+    '<p class="more-hint">Отчёт содержит только счётчики действий: без названий продуктов, цен и личных данных. Отправка — только по кнопке.</p>' +
+  '</section>';
+}
+
 function installMarkup() {
   const install = pwa.getInstallState();
   if (install.standalone) {
@@ -240,8 +323,8 @@ function aboutMarkup() {
       '<span class="section-note">локально</span>' +
     '</div>' +
     '<div class="more-about card">' +
-      '<p class="more-about__text">ПОЛКА — кухонный журнал: полка, рецепты, план и покупки. Без аккаунтов, облака и аналитики.</p>' +
-      '<p class="more-about__text">Данные не покидают устройство. Перенос — только файлом JSON.</p>' +
+      '<p class="more-about__text">ПОЛКА — кухонный журнал: полка, рецепты, план и покупки. Без аккаунтов и облака. Аналитика — локальные счётчики; отчёт уходит только по кнопке.</p>' +
+      '<p class="more-about__text">Кухня не покидает устройство. Перенос — только файлом JSON.</p>' +
       '<dl class="more-facts">' +
         '<div class="more-facts__row">' +
           '<dt>Версия</dt><dd>' + APP_VERSION + '</dd>' +
@@ -339,6 +422,12 @@ function bindMoreEvents(screen) {
       clearKitchen();
     } else if (action === 'install') {
       installApp();
+    } else if (action === 'report-share') {
+      shareReport(target);
+    } else if (action === 'report-download') {
+      downloadReport(target);
+    } else if (action === 'analytics-reset') {
+      resetCounters();
     }
   });
 
@@ -388,6 +477,7 @@ async function exportKitchen(button) {
           title: 'Кухня ПОЛКИ',
           text: 'Файл с продуктами, планом и покупками.'
         });
+        track('export');
         toast('Файл отправлен. Кухня сохранена в JSON.');
         return;
       } catch (error) {
@@ -407,6 +497,7 @@ async function exportKitchen(button) {
     link.click();
     link.remove();
     window.setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+    track('export');
     toast('Файл ' + name + ' скачан.');
   } catch (error) {
     toast('Не получилось подготовить файл. Попробуйте ещё раз.', { tone: 'error' });
@@ -471,6 +562,7 @@ async function handleImport(file) {
       toast('Не удалось загрузить кухню. Данные не изменены.', { tone: 'error' });
       return;
     }
+    track('import');
     closeAllSheets();
     window.setTimeout(function () { router.navigate('pantry'); }, 80);
   } finally {
@@ -495,6 +587,7 @@ async function loadDemo() {
   busy = true;
   try {
     store.loadDemo();
+    track('demo_load');
     closeAllSheets();
     window.setTimeout(function () { router.navigate('pantry'); }, 80);
   } finally {
@@ -516,6 +609,84 @@ async function clearKitchen() {
     store.clearAll();
     closeAllSheets();
     window.setTimeout(function () { router.navigate('pantry'); }, 80);
+  } finally {
+    busy = false;
+  }
+}
+
+/* ── Отчёт по аналитике ──────────────────────────────────────────── */
+
+async function shareReport(button) {
+  if (busy) return;
+  busy = true;
+  if (button) button.disabled = true;
+
+  let outcome = 'failed';
+  try {
+    outcome = await shareText({
+      title: 'ПОЛКА — отчёт об использовании',
+      text: buildTextReport()
+    });
+  } catch (error) {
+    outcome = 'failed';
+  } finally {
+    busy = false;
+    if (button && button.isConnected) button.disabled = false;
+  }
+
+  track('report_share');
+  if (outcome === 'shared') {
+    toast('Отчёт отправлен.');
+  } else if (outcome === 'copied') {
+    toast('Отчёт скопирован — вставьте его в чат или письмо.');
+  } else if (outcome === 'cancelled') {
+    toast('Отправка отменена.');
+  } else {
+    toast('Не получилось поделиться. Скачайте JSON.', { tone: 'error' });
+  }
+}
+
+function downloadReport(button) {
+  if (busy) return;
+  busy = true;
+  if (button) button.disabled = true;
+  try {
+    const name = 'polka-analytics-' + store.getToday() + '.json';
+    const blob = new Blob([buildJsonReport()], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = name;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+    track('report_download');
+    toast('Файл ' + name + ' скачан.');
+  } catch (error) {
+    toast('Не получилось подготовить файл. Попробуйте ещё раз.', { tone: 'error' });
+  } finally {
+    busy = false;
+    if (button) button.disabled = false;
+  }
+}
+
+async function resetCounters() {
+  if (busy) return;
+  const confirmed = await confirmSheet({
+    title: 'Сбросить счётчики?',
+    text: 'История использования удалится с этого устройства. На кухню это не влияет.',
+    confirmLabel: 'Сбросить',
+    danger: true
+  });
+  if (!confirmed) return;
+
+  busy = true;
+  try {
+    resetAnalytics();
+    closeAllSheets();
+    router.refresh({ scroll: false });
+    toast('Счётчики сброшены.');
   } finally {
     busy = false;
   }

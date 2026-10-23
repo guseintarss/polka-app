@@ -10,6 +10,8 @@ import {
   render as renderHTML, emptyState, expiryBadge, focusFirstError,
   toast, openSheet, confirmSheet
 } from '../ui.js';
+import { createScanner, isScannerSupported } from '../scanner.js';
+import { track } from '../analytics.js';
 
 const FILTER_DEFAULTS = { query: '', category: 'all', storage: 'all', sort: 'expiry', soon: false };
 const SORT_LABELS = { expiry: 'по сроку', name: 'по названию', price: 'по цене' };
@@ -352,11 +354,18 @@ function openProductSheet(item) {
     category: 'Другое',
     storage: 'pantry',
     expires: '',
-    price: ''
+    price: '',
+    barcode: ''
   };
 
   const content =
     '<form class="pantry-form" id="pantry-form" novalidate>' +
+      '<div class="pantry-scan">' +
+        '<button class="btn btn--ghost btn--block" type="button" data-scan>' +
+          icon('scan') + 'Сканировать штрихкод или QR' +
+        '</button>' +
+        '<p class="field__hint">Наведите камеру на код товара — код и название подставим в карточку.</p>' +
+      '</div>' +
       '<div class="field">' +
         '<label class="field__label" for="pantry-name">Название <span>обязательно</span></label>' +
         '<input id="pantry-name" name="name" type="text" list="pantry-ingredients" maxlength="80" ' +
@@ -408,6 +417,12 @@ function openProductSheet(item) {
           'value="' + esc(current.price || '') + '" aria-describedby="pantry-price-error">' +
         '<p class="field__error" id="pantry-price-error" data-error="price" hidden></p>' +
       '</div>' +
+      '<div class="field">' +
+        '<label class="field__label" for="pantry-barcode">Штрихкод <span>если есть</span></label>' +
+        '<input id="pantry-barcode" name="barcode" type="text" maxlength="64" autocomplete="off" spellcheck="false" ' +
+          'value="' + esc(current.barcode || '') + '" aria-describedby="pantry-barcode-hint">' +
+        '<p class="field__hint" id="pantry-barcode-hint" data-barcode-hint>Заполнится после сканирования. Можно ввести вручную.</p>' +
+      '</div>' +
       '<p class="form-error" data-form-error role="alert" hidden></p>' +
       (editing
         ? '<div class="pantry-form__danger">' +
@@ -439,6 +454,9 @@ function openProductSheet(item) {
   const categorySelect = form.querySelector('#pantry-category');
   const expiresInput = form.querySelector('#pantry-expires');
   const priceInput = form.querySelector('#pantry-price');
+  const barcodeInput = form.querySelector('#pantry-barcode');
+  const barcodeHint = form.querySelector('[data-barcode-hint]');
+  const scanButton = form.querySelector('[data-scan]');
   const storageButtons = Array.prototype.slice.call(form.querySelectorAll('[data-storage-option]'));
   const autofill = form.querySelector('[data-autofill]');
   const nameHint = form.querySelector('#pantry-name-hint');
@@ -557,6 +575,113 @@ function openProductSheet(item) {
     return pressed ? pressed.getAttribute('data-storage-option') : 'pantry';
   }
 
+  function applyScanText(raw) {
+    const parsed = E.parseScanPayload(raw);
+
+    if (parsed.code) {
+      track('scan_ok', { kind: parsed.kind });
+      barcodeInput.value = parsed.code;
+      const known = store.getState().pantry.find(function (entry) {
+        return entry.barcode === parsed.code && (!editing || entry.id !== item.id);
+      });
+
+      if (!nameInput.value.trim() && known) {
+        nameInput.value = known.name;
+        activeMeta = known.ingredientId ? E.ingredientById(known.ingredientId) : E.resolveIngredient(known.name);
+        if (activeMeta) applyMeta(activeMeta);
+        else setAutofill('');
+        barcodeHint.textContent = 'Код ' + parsed.code + ' — знакомый продукт «' + known.name + '».';
+        toast('Код распознан: «' + known.name + '».');
+        return;
+      }
+
+      barcodeHint.textContent = 'Код ' + parsed.code + ' сохранён в карточке.';
+      if (!nameInput.value.trim()) {
+        toast('Код распознан. Впишите название продукта.');
+        nameInput.focus();
+      } else {
+        toast('Код ' + parsed.code + ' добавлен к продукту.');
+      }
+      return;
+    }
+
+    if (parsed.name) {
+      track('scan_ok', { kind: parsed.kind });
+      if (!nameInput.value.trim()) {
+        nameInput.value = parsed.name;
+        activeMeta = E.resolveIngredient(parsed.name);
+        if (activeMeta) applyMeta(activeMeta);
+        else setAutofill('');
+        toast('Из QR-кода подставлено название: «' + parsed.name + '».');
+      } else {
+        toast('QR-код распознан, но название уже заполнено.');
+      }
+      return;
+    }
+
+    toast('Код распознан, но данных о продукте в нём нет. Впишите название вручную.', { tone: 'error' });
+    track('scan_fail', { reason: 'empty' });
+  }
+
+  function openScanSheet() {
+    if (!isScannerSupported()) {
+      toast('Камера недоступна: нужен HTTPS и разрешение. Введите код вручную.', { tone: 'error', duration: 6000 });
+      track('scan_fail', { reason: 'unsupported' });
+      return;
+    }
+
+    let scanner = null;
+    const sheet = openSheet({
+      eyebrow: 'Сканер',
+      title: 'Наведите камеру',
+      subtitle: 'Штрихкод или QR-код товара',
+      className: 'sheet--scanner',
+      content:
+        '<div class="scanner">' +
+          '<div class="scanner__viewport">' +
+            '<video class="scanner__video" playsinline muted autoplay aria-label="Изображение с камеры"></video>' +
+            '<span class="scanner__frame" aria-hidden="true"></span>' +
+          '</div>' +
+          '<p class="scanner__status" role="status" data-scan-status>Включаем камеру…</p>' +
+          '<p class="scanner__hint">Держите код в рамке. Декодер работает офлайн.</p>' +
+        '</div>',
+      footer:
+        '<button class="btn btn--ghost" type="button" data-scan-cancel>Отмена</button>' +
+        '<button class="btn btn--quiet" type="button" data-scan-manual>Ввести вручную</button>',
+      initialFocus: '[data-scan-cancel]',
+      onClose: function () { if (scanner) scanner.stop(); }
+    });
+
+    const video = sheet.dialog.querySelector('.scanner__video');
+    const status = sheet.dialog.querySelector('[data-scan-status]');
+
+    scanner = createScanner({
+      video: video,
+      onStatus: function (text) { status.textContent = text; },
+      onResult: function (text) {
+        if (navigator.vibrate) navigator.vibrate(50);
+        sheet.close();
+        applyScanText(text);
+      },
+      onError: function (message, reason) {
+        track('scan_fail', { reason: reason || 'failed' });
+        status.textContent = message;
+        status.classList.add('is-error');
+        const cancel = sheet.dialog.querySelector('[data-scan-cancel]');
+        if (cancel) cancel.textContent = 'Закрыть';
+      }
+    });
+
+    sheet.dialog.querySelector('[data-scan-cancel]').addEventListener('click', sheet.close);
+    sheet.dialog.querySelector('[data-scan-manual]').addEventListener('click', function () {
+      sheet.close();
+      barcodeInput.focus();
+    });
+    scanner.start();
+  }
+
+  if (scanButton) scanButton.addEventListener('click', openScanSheet);
+
   nameInput.addEventListener('input', function () {
     clearError('name');
     formError.hidden = true;
@@ -645,7 +770,8 @@ function openProductSheet(item) {
       category: categorySelect.value,
       storage: currentStorage(),
       expires: E.isValidISODate(expiresInput.value) ? expiresInput.value : null,
-      price: Math.max(0, Math.round(price))
+      price: Math.max(0, Math.round(price)),
+      barcode: barcodeInput.value.trim()
     };
     if (editing && name !== item.name) payload.ingredientId = null;
 
@@ -657,6 +783,7 @@ function openProductSheet(item) {
       sheet.close();
       renderScreen({ focus: '[data-id="' + saved.id + '"]' });
       toast(editing ? '«' + saved.name + '» обновлён.' : '«' + saved.name + '» на полке.');
+      track(editing ? 'product_edit' : 'product_add');
     } catch (error) {
       formError.textContent = error && error.message ? error.message : 'Не получилось сохранить продукт.';
       formError.hidden = false;

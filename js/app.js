@@ -6,6 +6,8 @@
 import * as store from './store.js';
 import * as router from './router.js';
 import { toast } from './ui.js';
+import { APP_VERSION } from './version.js';
+import { initAnalytics, track, trackScreen } from './analytics.js';
 import { pantryScreen } from './screens/pantry.js';
 import { recipesScreen, recipeScreen } from './screens/recipes.js';
 import { planScreen } from './screens/plan.js';
@@ -128,6 +130,7 @@ function setupLifecycle() {
   });
 
   window.addEventListener('appinstalled', function () {
+    track('install');
     toast('ПОЛКА установлена. Теперь она открывается с домашнего экрана.');
   });
 }
@@ -143,12 +146,14 @@ function setupRoutes() {
 
 function init() {
   store.init();
+  initAnalytics({ version: APP_VERSION, standalone: isStandalone() });
   currentDay = store.getToday();
   history.scrollRestoration = 'manual';
   document.documentElement.classList.toggle('is-standalone', isStandalone());
   document.documentElement.classList.toggle('is-ios', getInstallState().ios);
   setOnline(navigator.onLine);
   setupRoutes();
+  router.onChange(function (route) { trackScreen(route.tab); });
   router.start({ root: document.getElementById('screen'), fallback: 'pantry' });
   setupLifecycle();
   updateSaveStatus(null);

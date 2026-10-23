@@ -11,6 +11,7 @@ import {
   toast, openSheet, confirmSheet
 } from '../ui.js';
 import { createScanner, isScannerSupported } from '../scanner.js';
+import * as lookup from '../lookup.js';
 import { track } from '../analytics.js';
 
 const FILTER_DEFAULTS = { query: '', category: 'all', storage: 'all', sort: 'expiry', soon: false };
@@ -344,6 +345,26 @@ function defaultQty(meta) {
   return 1;
 }
 
+/* Упаковка из базы («400 g e», «0.5 l») → количество и единица ПОЛКИ. */
+function netQuantity(text) {
+  const match = String(text || '').replace(',', '.')
+    .match(/^~?\s*(\d+(?:\.\d+)?)\s*(kg|g|gr|grams?|ml|cl|l|lt|liters?|литр\w*|кг|г|мл|л)?/i);
+  if (!match) return null;
+  const value = Number(match[1]);
+  if (!Number.isFinite(value) || value <= 0) return null;
+  const unit = String(match[2] || '').toLowerCase();
+  if (/^(kg|кг)$/.test(unit)) {
+    return value >= 1 ? { qty: value, unit: 'кг' } : { qty: Math.round(value * 1000), unit: 'г' };
+  }
+  if (/^(g|г|gr|grams?)$/.test(unit)) return { qty: value, unit: 'г' };
+  if (/^(ml|мл)$/.test(unit)) return { qty: value, unit: 'мл' };
+  if (/^cl$/.test(unit)) return { qty: Math.round(value * 10), unit: 'мл' };
+  if (/^(l|lt|liters?|литр\w*|л)$/.test(unit)) {
+    return value >= 1 ? { qty: value, unit: 'л' } : { qty: Math.round(value * 1000), unit: 'мл' };
+  }
+  return null;
+}
+
 function openProductSheet(item) {
   const editing = Boolean(item);
   const today = store.getToday();
@@ -422,6 +443,10 @@ function openProductSheet(item) {
         '<input id="pantry-barcode" name="barcode" type="text" maxlength="64" autocomplete="off" spellcheck="false" ' +
           'value="' + esc(current.barcode || '') + '" aria-describedby="pantry-barcode-hint">' +
         '<p class="field__hint" id="pantry-barcode-hint" data-barcode-hint>Заполнится после сканирования. Можно ввести вручную.</p>' +
+        '<button class="btn btn--quiet btn--block" type="button" data-lookup>' +
+          icon('search') + '<span data-lookup-label aria-live="polite">Найти название в интернете</span>' +
+        '</button>' +
+        '<p class="field__hint">Запрос уходит только по нажатию: код — в открытую базу Open Food Facts.</p>' +
       '</div>' +
       '<p class="form-error" data-form-error role="alert" hidden></p>' +
       (editing
@@ -457,6 +482,8 @@ function openProductSheet(item) {
   const barcodeInput = form.querySelector('#pantry-barcode');
   const barcodeHint = form.querySelector('[data-barcode-hint]');
   const scanButton = form.querySelector('[data-scan]');
+  const lookupButton = form.querySelector('[data-lookup]');
+  const lookupLabel = form.querySelector('[data-lookup-label]');
   const storageButtons = Array.prototype.slice.call(form.querySelectorAll('[data-storage-option]'));
   const autofill = form.querySelector('[data-autofill]');
   const nameHint = form.querySelector('#pantry-name-hint');
@@ -480,6 +507,7 @@ function openProductSheet(item) {
     ? (item.ingredientId ? E.ingredientById(item.ingredientId) : E.resolveIngredient(item.name))
     : null;
   let submitting = false;
+  let lookupBusy = false;
 
   function setStorage(id) {
     storageButtons.forEach(function (button) {
@@ -575,6 +603,111 @@ function openProductSheet(item) {
     return pressed ? pressed.getAttribute('data-storage-option') : 'pantry';
   }
 
+  function fillFromName(name, ingredientId) {
+    nameInput.value = name;
+    activeMeta = ingredientId ? E.ingredientById(ingredientId) : E.resolveIngredient(name);
+    if (activeMeta) applyMeta(activeMeta);
+    else setAutofill('');
+  }
+
+  function setLookupBusy(busy) {
+    lookupBusy = busy;
+    if (!lookupButton) return;
+    lookupButton.disabled = busy;
+    lookupButton.setAttribute('aria-busy', busy ? 'true' : 'false');
+    if (lookupLabel) lookupLabel.textContent = busy ? 'Ищем в Open Food Facts…' : 'Найти название в интернете';
+  }
+
+  function applyLookupProduct(code, info, cached) {
+    const source = cached ? 'Из памяти устройства' : 'Из Open Food Facts';
+    if (nameInput.value.trim()) {
+      toast(source + ': «' + info.name + '». Название уже заполнено — оставили ваше.', { duration: 7000 });
+      return;
+    }
+
+    fillFromName(info.name, null);
+
+    const parts = [];
+    if (info.brand && E.normalizeName(info.brand) !== E.normalizeName(info.name)) parts.push(info.brand);
+    const net = netQuantity(info.quantity);
+    if (net && !touched.qty && !touched.unit && DATA.UNITS.indexOf(net.unit) !== -1) {
+      qtyInput.value = String(net.qty);
+      unitSelect.value = net.unit;
+      touched.qty = true;
+      touched.unit = true;
+      if (!touched.price && activeMeta) {
+        const estimate = estimatePrice();
+        if (estimate) priceInput.value = String(estimate);
+      }
+      parts.push('в упаковке ' + E.formatQty(net.qty, net.unit));
+    } else if (info.quantity) {
+      parts.push(info.quantity);
+    }
+
+    setAutofill(source + ': ' + (parts.length ? parts.join(' · ') + '. ' : '') + 'Проверьте название и количество.');
+    barcodeHint.textContent = 'Код ' + code + (cached ? ' — есть в памяти устройства.' : ' — найден в Open Food Facts.');
+    toast(source + ': «' + info.name + '».');
+  }
+
+  async function runLookup() {
+    if (lookupBusy) return;
+    const code = lookup.codeForLookup(barcodeInput.value);
+    if (!code) {
+      toast('Код должен быть из 8–14 цифр. Отсканируйте его или введите вручную.', { tone: 'error' });
+      barcodeInput.focus();
+      return;
+    }
+
+    const remembered = lookup.cachedProduct(code);
+    if (remembered) {
+      applyLookupProduct(code, remembered, true);
+      track('scan_lookup', { reason: 'found' });
+      return;
+    }
+
+    if (!navigator.onLine) {
+      toast('Нет интернета. Повторите, когда появится связь.', { tone: 'error' });
+      track('scan_lookup', { reason: 'offline' });
+      return;
+    }
+
+    if (!lookup.hasLookupConsent()) {
+      const allowed = await confirmSheet({
+        title: 'Найти продукт в интернете?',
+        text: 'Код ' + code + ' уйдёт в открытую базу Open Food Facts. Названия, цены и данные о кухне останутся на устройстве.',
+        confirmLabel: 'Найти',
+        danger: false
+      });
+      if (!allowed) return;
+      lookup.grantLookupConsent();
+    }
+
+    setLookupBusy(true);
+    let result;
+    try {
+      result = await lookup.findProduct(code);
+    } finally {
+      setLookupBusy(false);
+    }
+    if (!result) return;
+
+    if (result.status === 'found') track('scan_lookup', { reason: 'found' });
+    else track('scan_lookup', { reason: result.status });
+
+    if (!sheet.dialog.isConnected) return;
+
+    if (result.status === 'found') {
+      applyLookupProduct(code, result.product, false);
+      return;
+    }
+
+    if (result.status === 'notfound') {
+      toast('В базе Open Food Facts этого кода нет. Впишите название вручную.', { tone: 'error', duration: 7000 });
+    } else {
+      toast('Не получилось получить данные. Проверьте связь и попробуйте ещё раз.', { tone: 'error' });
+    }
+  }
+
   function applyScanText(raw) {
     const parsed = E.parseScanPayload(raw);
 
@@ -586,13 +719,20 @@ function openProductSheet(item) {
       });
 
       if (!nameInput.value.trim() && known) {
-        nameInput.value = known.name;
-        activeMeta = known.ingredientId ? E.ingredientById(known.ingredientId) : E.resolveIngredient(known.name);
-        if (activeMeta) applyMeta(activeMeta);
-        else setAutofill('');
+        fillFromName(known.name, known.ingredientId);
         barcodeHint.textContent = 'Код ' + parsed.code + ' — знакомый продукт «' + known.name + '».';
         toast('Код распознан: «' + known.name + '».');
         return;
+      }
+
+      if (!nameInput.value.trim()) {
+        const remembered = lookup.cachedProduct(parsed.code);
+        if (remembered) {
+          fillFromName(remembered.name, null);
+          barcodeHint.textContent = 'Код ' + parsed.code + ' — из памяти устройства: «' + remembered.name + '».';
+          toast('Код ' + parsed.code + ': подставили «' + remembered.name + '» из памяти.');
+          return;
+        }
       }
 
       barcodeHint.textContent = 'Код ' + parsed.code + ' сохранён в карточке.';
@@ -681,6 +821,7 @@ function openProductSheet(item) {
   }
 
   if (scanButton) scanButton.addEventListener('click', openScanSheet);
+  if (lookupButton) lookupButton.addEventListener('click', runLookup);
 
   nameInput.addEventListener('input', function () {
     clearError('name');

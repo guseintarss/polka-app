@@ -15,6 +15,7 @@ import {
   track, getSummary, buildTextReport, buildJsonReport, resetAnalytics
 } from '../analytics.js';
 import { openPlanSettings, planSettingsSummary } from './plan.js';
+import * as lookup from '../lookup.js';
 
 const INSTALL_HINT = 'Откройте меню браузера и выберите «Установить приложение» или «Добавить на главный экран».';
 
@@ -195,6 +196,14 @@ function dataMarkup() {
         '</span>' +
         '<span class="more-action__tail" aria-hidden="true">' + icon('chevron-right') + '</span>' +
       '</button>' +
+      '<button class="more-action" type="button" data-action="lookup-reset">' +
+        '<span class="more-action__icon">' + icon('lock') + '</span>' +
+        '<span class="more-action__body">' +
+          '<span class="more-action__title">Память поиска по коду</span>' +
+          '<span class="more-action__meta">' + esc(lookupMetaText()) + '</span>' +
+        '</span>' +
+        '<span class="more-action__tail" aria-hidden="true">' + icon('chevron-right') + '</span>' +
+      '</button>' +
     '</div>' +
     '<p class="more-hint">Файл содержит продукты, план, покупки, настройки и статистику. Импорт заменяет кухню целиком — перед загрузкой можно сделать экспорт.</p>' +
     '<input class="visually-hidden" type="file" accept="application/json,.json" data-import-input tabindex="-1" aria-hidden="true">' +
@@ -228,6 +237,7 @@ function analyticsMarkup() {
   const summary = getSummary();
   const added = eventCount(summary, 'product_add') + eventCount(summary, 'product_edit');
   const scanned = eventCount(summary, 'scan_ok');
+  const lookups = eventCount(summary, 'scan_lookup');
   const opened = eventCount(summary, 'recipe_open');
   const cooked = eventCount(summary, 'cook');
   const checked = eventCount(summary, 'shopping_check');
@@ -245,6 +255,7 @@ function analyticsMarkup() {
         factRow('Запусков', summary.sessions) +
         factRow('Добавлено продуктов', added) +
         factRow('Сканирований', scanned) +
+        factRow('Поисков по коду', lookups) +
         factRow('Открыто рецептов', opened) +
         factRow('Приготовлено', cooked) +
         factRow('Отмечено покупок', checked) +
@@ -323,7 +334,7 @@ function aboutMarkup() {
       '<span class="section-note">локально</span>' +
     '</div>' +
     '<div class="more-about card">' +
-      '<p class="more-about__text">ПОЛКА — кухонный журнал: полка, рецепты, план и покупки. Без аккаунтов и облака. Аналитика — локальные счётчики; отчёт уходит только по кнопке.</p>' +
+      '<p class="more-about__text">ПОЛКА — кухонный журнал: полка, рецепты, план и покупки. Без аккаунтов и облака. Аналитика — локальные счётчики; отчёт уходит только по кнопке. Данные о товаре запрашиваются у открытой базы Open Food Facts только по кнопке «Найти название в интернете» — и только штрихкод.</p>' +
       '<p class="more-about__text">Кухня не покидает устройство. Перенос — только файлом JSON.</p>' +
       '<dl class="more-facts">' +
         '<div class="more-facts__row">' +
@@ -428,6 +439,8 @@ function bindMoreEvents(screen) {
       downloadReport(target);
     } else if (action === 'analytics-reset') {
       resetCounters();
+    } else if (action === 'lookup-reset') {
+      resetLookupMemory();
     }
   });
 
@@ -687,6 +700,43 @@ async function resetCounters() {
     closeAllSheets();
     router.refresh({ scroll: false });
     toast('Счётчики сброшены.');
+  } finally {
+    busy = false;
+  }
+}
+
+/* ── Память поиска по коду ───────────────────────────────────────── */
+
+function lookupMetaText() {
+  const info = lookup.lookupMemoryInfo();
+  if (!info.consent && !info.count) return 'пусто: приложение ничего не запрашивало';
+  const parts = [info.consent ? 'разрешение выдано' : 'без разрешения'];
+  if (info.count) parts.push('сохранённых кодов: ' + info.count);
+  return parts.join(' · ');
+}
+
+async function resetLookupMemory() {
+  if (busy) return;
+  const info = lookup.lookupMemoryInfo();
+  if (!info.consent && !info.count) {
+    toast('Память поиска по коду уже пуста.');
+    return;
+  }
+
+  const confirmed = await confirmSheet({
+    title: 'Забыть коды товаров?',
+    text: 'Удалятся сохранённые названия и разрешение на поиск по коду. В следующий раз приложение спросит разрешение снова.',
+    confirmLabel: 'Забыть',
+    danger: true
+  });
+  if (!confirmed) return;
+
+  busy = true;
+  try {
+    lookup.resetLookupData();
+    closeAllSheets();
+    router.refresh({ scroll: false });
+    toast('Память поиска по коду очищена.');
   } finally {
     busy = false;
   }

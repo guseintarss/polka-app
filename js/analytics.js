@@ -329,6 +329,11 @@ function actionLines(events) {
   if (count(totals.shopping_add)) lines.push('- добавлено покупок: ' + count(totals.shopping_add));
   if (count(totals.shopping_check)) lines.push('- отмечено покупок: ' + count(totals.shopping_check));
 
+  const lookups = count(totals.scan_lookup);
+  if (lookups) {
+    lines.push('- поиск по коду: ' + lookups + ' (найдено: ' + count(totals['scan_lookup.found']) + ')');
+  }
+
   const exported = count(totals.export);
   const imported = count(totals.import);
   const demo = count(totals.demo_load);

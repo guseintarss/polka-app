@@ -3,4 +3,4 @@
  * Одна точка правды: экран «Ещё» и отчёт аналитики берут версию отсюда.
  */
 
-export const APP_VERSION = '1.1.0';
+export const APP_VERSION = '1.2.0';
